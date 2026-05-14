@@ -84,6 +84,17 @@ app.post('/admin/deactivate/:id', authMiddleware, async (req, res) => {
   }
 })
 
+// Reactivate business
+app.post('/admin/activate/:id', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' })
+  try {
+    await pool.query("UPDATE businesses SET status = 'active' WHERE id = $1", [req.params.id])
+    res.json({ message: 'Business activated' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // Delete business
 app.delete('/admin/business/:id', authMiddleware, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' })
@@ -150,7 +161,7 @@ app.get('/business/status', authMiddleware, async (req, res) => {
   }
 })
 
-// Register employee — returns unique code
+// Register employee
 app.post('/business/employee', authMiddleware, async (req, res) => {
   if (req.user.role !== 'business') return res.status(403).json({ error: 'Forbidden' })
   const { name } = req.body
@@ -177,4 +188,89 @@ app.get('/business/employees', authMiddleware, async (req, res) => {
     )
     res.json(result.rows)
   } catch (err) {
-    res.status(500)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ════════════════════════════════════════════════════════════
+// RELAY ROUTES
+// ════════════════════════════════════════════════════════════
+
+// Business pushes schedule to employee
+app.post('/relay/push', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'business') return res.status(403).json({ error: 'Forbidden' })
+  const { employee_code, message_type, payload } = req.body
+  if (!employee_code || !message_type || !payload)
+    return res.status(400).json({ error: 'employee_code, message_type and payload required' })
+  try {
+    await pool.query(
+      'INSERT INTO relay_messages (employee_code, business_id, message_type, payload) VALUES ($1,$2,$3,$4)',
+      [employee_code, req.user.id, message_type, JSON.stringify(payload)]
+    )
+    res.json({ message: 'Schedule pushed' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Employee pulls messages — deleted after delivery
+app.get('/relay/pull', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'employee') return res.status(403).json({ error: 'Forbidden' })
+  try {
+    const result = await pool.query(
+      'SELECT * FROM relay_messages WHERE employee_code = $1 AND delivered = FALSE ORDER BY created_at ASC',
+      [req.user.code]
+    )
+    if (result.rows.length > 0) {
+      await pool.query(
+        'UPDATE relay_messages SET delivered = TRUE WHERE employee_code = $1',
+        [req.user.code]
+      )
+      await pool.query(
+        'DELETE FROM relay_messages WHERE employee_code = $1 AND delivered = TRUE',
+        [req.user.code]
+      )
+    }
+    res.json(result.rows.map(r => ({ ...r, payload: JSON.parse(r.payload) })))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ════════════════════════════════════════════════════════════
+// EMPLOYEE ROUTES
+// ════════════════════════════════════════════════════════════
+
+// Login with code
+app.post('/employee/login', async (req, res) => {
+  const { code } = req.body
+  if (!code) return res.status(400).json({ error: 'Code required' })
+  try {
+    const result = await pool.query(
+      `SELECT e.*, b.name as business_name, b.status as business_status
+       FROM employees e
+       JOIN businesses b ON e.business_id = b.id
+       WHERE e.code = $1`,
+      [code.toUpperCase()]
+    )
+    const employee = result.rows[0]
+    if (!employee) return res.status(404).json({ error: 'Invalid code' })
+    if (employee.business_status !== 'active')
+      return res.status(403).json({ error: 'Business account is not active' })
+    const token = jwt.sign(
+      { id: employee.id, role: 'employee', code: employee.code, business_id: employee.business_id },
+      SECRET,
+      { expiresIn: '30d' }
+    )
+    res.json({ token, employee: { name: employee.name, business: employee.business_name } })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Start server ──────────────────────────────────────────────
+setupDatabase().then(() => {
+  app.listen(PORT, () => {
+    console.log(`EasyRoaster server running on port ${PORT}`)
+  })
+})
