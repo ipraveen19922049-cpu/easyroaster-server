@@ -267,7 +267,24 @@ app.post('/employee/login', async (req, res) => {
     res.status(500).json({ error: err.message })
   }
 })
-
+// Admin creates a business directly (sets to active immediately)
+app.post('/admin/business/create', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' })
+  const { name, owner, email, password } = req.body
+  if (!name || !owner || !email || !password)
+    return res.status(400).json({ error: 'All fields required' })
+  try {
+    const hash   = await bcrypt.hash(password, 10)
+    const result = await pool.query(
+      "INSERT INTO businesses (name, owner, email, password, status) VALUES ($1,$2,$3,$4,'active') RETURNING id, name, status",
+      [name, owner, email, hash]
+    )
+    res.json({ message: 'Business created successfully', business: result.rows[0] })
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' })
+    res.status(500).json({ error: err.message })
+  }
+})
 // ── Start server ──────────────────────────────────────────────
 setupDatabase().then(() => {
   app.listen(PORT, () => {
