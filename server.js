@@ -285,6 +285,125 @@ app.post('/admin/business/create', authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message })
   }
 })
+// ════════════════════════════════════════════════════════════
+// LEAVE REQUEST ROUTES
+// ════════════════════════════════════════════════════════════
+
+// Employee submits leave request
+app.post('/leave/request', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'employee') return res.status(403).json({ error: 'Forbidden' })
+  const { date, reason } = req.body
+  if (!date) return res.status(400).json({ error: 'Date is required' })
+  try {
+    // Get employee details
+    const empResult = await pool.query(
+      'SELECT * FROM employees WHERE code = $1',
+      [req.user.code]
+    )
+    const employee = empResult.rows[0]
+    if (!employee) return res.status(404).json({ error: 'Employee not found' })
+
+    // Check if already requested for this date
+    const existing = await pool.query(
+      'SELECT * FROM leave_requests WHERE employee_code = $1 AND date = $2',
+      [req.user.code, date]
+    )
+    if (existing.rows.length > 0)
+      return res.status(409).json({ error: 'Leave already requested for this date' })
+
+    const result = await pool.query(
+      'INSERT INTO leave_requests (employee_code, employee_name, business_id, date, reason) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+      [req.user.code, employee.name, employee.business_id, date, reason || '']
+    )
+    res.json({ message: 'Leave request submitted', request: result.rows[0] })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Business gets all leave requests
+app.get('/leave/business', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'business') return res.status(403).json({ error: 'Forbidden' })
+  try {
+    const result = await pool.query(
+      'SELECT * FROM leave_requests WHERE business_id = $1 ORDER BY created_at DESC',
+      [req.user.id]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Business approves leave — notifies employee via relay
+app.post('/leave/approve/:id', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'business') return res.status(403).json({ error: 'Forbidden' })
+  try {
+    const result = await pool.query(
+      "UPDATE leave_requests SET status = 'approved' WHERE id = $1 AND business_id = $2 RETURNING *",
+      [req.params.id, req.user.id]
+    )
+    const leave = result.rows[0]
+    if (!leave) return res.status(404).json({ error: 'Leave request not found' })
+
+    // Send relay message to employee app to delete shift on that date
+    await pool.query(
+      'INSERT INTO relay_messages (employee_code, business_id, message_type, payload) VALUES ($1,$2,$3,$4)',
+      [
+        leave.employee_code,
+        req.user.id,
+        'leave_approved',
+        JSON.stringify({ date: leave.date, employee_name: leave.employee_name })
+      ]
+    )
+
+    res.json({ message: 'Leave approved', leave })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Business declines leave — notifies employee via relay
+app.post('/leave/decline/:id', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'business') return res.status(403).json({ error: 'Forbidden' })
+  try {
+    const result = await pool.query(
+      "UPDATE leave_requests SET status = 'declined' WHERE id = $1 AND business_id = $2 RETURNING *",
+      [req.params.id, req.user.id]
+    )
+    const leave = result.rows[0]
+    if (!leave) return res.status(404).json({ error: 'Leave request not found' })
+
+    // Send relay message to employee — leave declined
+    await pool.query(
+      'INSERT INTO relay_messages (employee_code, business_id, message_type, payload) VALUES ($1,$2,$3,$4)',
+      [
+        leave.employee_code,
+        req.user.id,
+        'leave_declined',
+        JSON.stringify({ date: leave.date, employee_name: leave.employee_name })
+      ]
+    )
+
+    res.json({ message: 'Leave declined', leave })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Employee gets their own leave requests
+app.get('/leave/my', authMiddleware, async (req, res) => {
+  if (req.user.role !== 'employee') return res.status(403).json({ error: 'Forbidden' })
+  try {
+    const result = await pool.query(
+      'SELECT * FROM leave_requests WHERE employee_code = $1 ORDER BY date DESC',
+      [req.user.code]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 // ── Start server ──────────────────────────────────────────────
 setupDatabase().then(() => {
   app.listen(PORT, () => {
