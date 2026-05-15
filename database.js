@@ -30,7 +30,16 @@ async function setupDatabase() {
       business_id INTEGER REFERENCES businesses(id),
       created_at TIMESTAMP DEFAULT NOW()
     );
-
+    CREATE TABLE IF NOT EXISTS leave_requests (
+      id SERIAL PRIMARY KEY,
+      employee_code VARCHAR(20) NOT NULL,
+      employee_name VARCHAR(255) NOT NULL,
+      business_id INTEGER NOT NULL,
+      date DATE NOT NULL,
+      reason TEXT,
+      status VARCHAR(20) DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS relay_messages (
       id SERIAL PRIMARY KEY,
       employee_code VARCHAR(20) NOT NULL,
